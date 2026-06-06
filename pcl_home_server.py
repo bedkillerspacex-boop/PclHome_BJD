@@ -10,7 +10,6 @@ import threading
 import time
 import traceback
 from collections import defaultdict, deque
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
@@ -46,6 +45,7 @@ DEFAULT_CONFIG = {
 APP_VERSION = "1.0.0"
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+RUNTIME_LOG_PATH = os.path.join(os.path.dirname(__file__), "server.runtime.log")
 STATUS_CACHE = {"status": None, "expires_at": 0}
 LATENCY_HISTORY = deque()
 GITHUB_CACHE = {"status": None, "expires_at": 0}
@@ -71,6 +71,15 @@ def load_config():
 
 
 CONFIG = load_config()
+
+
+def append_runtime_log(message):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    try:
+        with open(RUNTIME_LOG_PATH, "a", encoding="utf-8") as log_file:
+            log_file.write(f"[{timestamp}] {message}\n")
+    except Exception:
+        pass
 
 
 def write_varint(value):
@@ -748,86 +757,6 @@ def make_home_xaml(status, github_status, blog_status):
 </local:MyCard>"""
 
 
-class Handler(BaseHTTPRequestHandler):
-    def log_request_line(self):
-        client_ip = get_client_ip(self)
-        user_agent = self.headers.get("User-Agent", "-")
-        print(f"[REQ] {self.log_date_time_string()} {client_ip} {self.command} {self.path} UA={user_agent}")
-
-    def send_body(self, status_code, content_type, body):
-        if isinstance(body, str):
-            body = body.encode("utf-8")
-        try:
-            self.send_response(status_code)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            self.wfile.flush()
-        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-            return
-
-    def send_rate_limited(self, retry_after, message):
-        body = json.dumps(
-            {"error": "rate_limited", "message": message, "retryAfter": retry_after},
-            ensure_ascii=False,
-            indent=2,
-        )
-        encoded = body.encode("utf-8")
-        try:
-            self.send_response(429)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Retry-After", str(retry_after))
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
-            self.wfile.flush()
-        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-            return
-
-    def do_GET(self):
-        try:
-            self.log_request_line()
-            path = urlparse(self.path).path.lower()
-            if path in ("/", "/custom.xaml"):
-                self.send_body(200, "application/xml; charset=utf-8", make_home_xaml(get_status(), get_github_status(), get_blog_status()))
-                return
-
-            # Rate limiting is disabled by default because PCL2 can issue clustered reload/debug requests.
-            allowed, retry_after, message = check_rate_limit(get_client_ip(self))
-            if not allowed:
-                self.send_rate_limited(retry_after, message)
-                return
-
-            if path == "/api/status":
-                self.send_body(
-                    200,
-                    "application/json; charset=utf-8",
-                    json.dumps(
-                        {"minecraft": get_status(), "github": get_github_status(), "blog": get_blog_status()},
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                )
-                return
-            self.send_body(404, "text/plain; charset=utf-8", "Not found")
-        except Exception:
-            if is_client_disconnect_error(traceback.format_exc()):
-                return
-            error_text = traceback.format_exc()
-            print(error_text)
-            try:
-                self.send_body(500, "text/plain; charset=utf-8", error_text)
-            except Exception:
-                if not is_client_disconnect_error(traceback.format_exc()):
-                    raise
-
-    def log_message(self, fmt, *args):
-        print("[%s] %s" % (self.log_date_time_string(), fmt % args))
-
-
 def is_client_disconnect_error(error_text):
     return (
         "ConnectionAbortedError" in error_text
@@ -837,10 +766,137 @@ def is_client_disconnect_error(error_text):
     )
 
 
+def http_status_text(status_code):
+    return {
+        200: "OK",
+        404: "Not Found",
+        429: "Too Many Requests",
+        500: "Internal Server Error",
+    }.get(status_code, "OK")
+
+
+def build_http_response(status_code, content_type, body, extra_headers=None):
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    headers = [
+        f"HTTP/1.1 {status_code} {http_status_text(status_code)}",
+        f"Content-Type: {content_type}",
+        "Cache-Control: no-store",
+        f"Content-Length: {len(body)}",
+        "Connection: close",
+    ]
+    if extra_headers:
+        headers.extend(extra_headers)
+    return ("\r\n".join(headers) + "\r\n\r\n").encode("ascii") + body
+
+
+def parse_http_request(client_socket):
+    data = b""
+    while b"\r\n\r\n" not in data and len(data) < 16384:
+        chunk = client_socket.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    header_text = data.decode("iso-8859-1", errors="replace")
+    lines = header_text.split("\r\n")
+    if not lines or len(lines[0].split()) < 2:
+        return None
+    method, path = lines[0].split()[:2]
+    headers = {}
+    for line in lines[1:]:
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        headers[key.strip()] = value.strip()
+    return {"method": method, "path": path, "headers": headers}
+
+
+def handle_http_request(client_socket, client_address):
+    try:
+        request = parse_http_request(client_socket)
+        if not request:
+            return
+        client_ip = client_address[0]
+        forwarded = request["headers"].get("X-Forwarded-For", "")
+        real_ip = request["headers"].get("X-Real-IP", "")
+        if CONFIG.get("trustProxyHeaders"):
+            if forwarded:
+                client_ip = forwarded.split(",", 1)[0].strip()
+            elif real_ip:
+                client_ip = real_ip.strip()
+
+        user_agent = request["headers"].get("User-Agent", "-")
+        line = f"[REQ] {time.strftime('%d/%b/%Y %H:%M:%S')} {client_ip} {request['method']} {request['path']} UA={user_agent}"
+        print(line)
+        append_runtime_log(line)
+
+        path = urlparse(request["path"]).path.lower()
+        if path == "/healthz":
+            response = build_http_response(200, "text/plain; charset=utf-8", "ok")
+        elif path in ("/", "/custom.xaml"):
+            response = build_http_response(
+                200,
+                "application/xml; charset=utf-8",
+                make_home_xaml(get_status(), get_github_status(), get_blog_status()),
+            )
+        else:
+            allowed, retry_after, message = check_rate_limit(client_ip)
+            if not allowed:
+                response = build_http_response(
+                    429,
+                    "application/json; charset=utf-8",
+                    json.dumps({"error": "rate_limited", "message": message, "retryAfter": retry_after}, ensure_ascii=False, indent=2),
+                    [f"Retry-After: {retry_after}"],
+                )
+            elif path == "/api/status":
+                response = build_http_response(
+                    200,
+                    "application/json; charset=utf-8",
+                    json.dumps(
+                        {"minecraft": get_status(), "github": get_github_status(), "blog": get_blog_status()},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            else:
+                response = build_http_response(404, "text/plain; charset=utf-8", "Not found")
+
+        client_socket.sendall(response)
+    except Exception:
+        error_text = traceback.format_exc()
+        append_runtime_log(error_text)
+        if not is_client_disconnect_error(error_text):
+            print(error_text)
+            try:
+                client_socket.sendall(build_http_response(500, "text/plain; charset=utf-8", error_text))
+            except Exception:
+                pass
+    finally:
+        try:
+            client_socket.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        client_socket.close()
+
+
+def serve_http_forever(host, port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((host, port))
+        server_socket.listen(20)
+        append_runtime_log(f"Listening on {host}:{port}")
+        while True:
+            client_socket, client_address = server_socket.accept()
+            threading.Thread(
+                target=handle_http_request,
+                args=(client_socket, client_address),
+                daemon=True,
+            ).start()
+
+
 def main():
     host = CONFIG["listenHost"]
     port = int(CONFIG["listenPort"])
-    server = HTTPServer((host, port), Handler)
     monitor = threading.Thread(target=github_monitor_loop, name="sscfg-github-monitor", daemon=True)
     monitor.start()
     blog_monitor = threading.Thread(target=blog_monitor_loop, name="bjd-blog-monitor", daemon=True)
@@ -850,11 +906,10 @@ def main():
     print(f"Minecraft status JSON: http://{host}:{port}/api/status")
     print(f"Minecraft target: {CONFIG['minecraftHost']}:{CONFIG['minecraftPort']}")
     try:
-        server.serve_forever()
+        serve_http_forever(host, port)
     finally:
         GITHUB_STOP.set()
         BLOG_STOP.set()
-        server.server_close()
 
 
 if __name__ == "__main__":
