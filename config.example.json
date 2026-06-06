@@ -1,0 +1,28 @@
+{
+  "listenHost": "0.0.0.0",
+  "listenPort": 3000,
+  "serverName": "\u6211\u7684\u4e16\u754c\u5e03\u5409\u5c9b\u670d\u52a1\u5668",
+  "minecraftHost": "play.bjd-mc.com",
+  "minecraftConnectHosts": [
+    "play.bjd-mc.com",
+    "115.236.116.140",
+    "115.236.126.67",
+    "106.2.37.76",
+    "106.2.37.13",
+    "115.236.116.141"
+  ],
+  "minecraftPort": 25565,
+  "joinHint": "\u628a play.bjd-mc.com \u52a0\u5165\u591a\u4eba\u6e38\u620f\u5373\u53ef\u8fdb\u5165\u5e03\u5409\u5c9b\u3002",
+  "refreshSeconds": 30,
+  "githubName": "SsCfg",
+  "sscfgIndexUrl": "https://raw.githubusercontent.com/bedkillerspacex-boop/SsCfg/master/index.json",
+  "githubProxyPrefix": "https://gh-proxy.com/",
+  "sscfgRefreshSeconds": 900,
+  "blogUrl": "https://mcbjd.net/blog/",
+  "blogRefreshSeconds": 900,
+  "rateLimitEnabled": false,
+  "rateLimitWindowSeconds": 5,
+  "rateLimitMaxRequests": 3,
+  "trustProxyHeaders": false,
+  "verifyHttps": false
+}
