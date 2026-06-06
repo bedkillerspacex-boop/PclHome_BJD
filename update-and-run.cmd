@@ -2,14 +2,17 @@
 setlocal
 cd /d "%~dp0"
 
-set "REPO_ZIP_URL=https://gh-proxy.com/https://github.com/bedkillerspacex-boop/PclHome_BJD/archive/refs/heads/master.zip"
+set "REPO_ZIP_URL_1=https://gh-proxy.com/https://github.com/bedkillerspacex-boop/PclHome_BJD/archive/refs/heads/master.zip"
+set "REPO_ZIP_URL_2=https://github.com/bedkillerspacex-boop/PclHome_BJD/archive/refs/heads/master.zip"
 set "TMP_ZIP=%TEMP%\PclHome_BJD-master.zip"
 set "TMP_DIR=%TEMP%\PclHome_BJD-master"
 
 echo Updating PclHome_BJD from remote...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ProgressPreference='SilentlyContinue';" ^
-  "try { Invoke-WebRequest -UseBasicParsing '%REPO_ZIP_URL%' -OutFile '%TMP_ZIP%' } catch { exit 1 }"
+call :download "%REPO_ZIP_URL_1%"
+if errorlevel 1 (
+  echo gh-proxy failed, trying direct GitHub...
+  call :download "%REPO_ZIP_URL_2%"
+)
 if errorlevel 1 (
   echo Update download failed. Starting local version...
   call "%~dp0run-server.cmd"
@@ -35,3 +38,10 @@ for /d %%D in ("%TMP_DIR%\PclHome_BJD-*") do (
 :copied
 echo Update finished.
 call "%~dp0run-server.cmd"
+goto :eof
+
+:download
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ProgressPreference='SilentlyContinue';" ^
+  "try { Invoke-WebRequest -UseBasicParsing '%~1' -OutFile '%TMP_ZIP%' } catch { exit 1 }"
+exit /b %errorlevel%
