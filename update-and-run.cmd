@@ -2,9 +2,9 @@
 setlocal
 cd /d "%~dp0"
 
-set "REPO_ZIP_URL=https://gh-proxy.com/https://github.com/bedkillerspacex-boop/PclHome_BJD/archive/refs/heads/main.zip"
-set "TMP_ZIP=%TEMP%\PclHome_BJD-main.zip"
-set "TMP_DIR=%TEMP%\PclHome_BJD-main"
+set "REPO_ZIP_URL=https://gh-proxy.com/https://github.com/bedkillerspacex-boop/PclHome_BJD/archive/refs/heads/master.zip"
+set "TMP_ZIP=%TEMP%\PclHome_BJD-master.zip"
+set "TMP_DIR=%TEMP%\PclHome_BJD-master"
 
 echo Updating PclHome_BJD from remote...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
