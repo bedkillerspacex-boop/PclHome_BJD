@@ -10,7 +10,7 @@ import threading
 import time
 import traceback
 from collections import defaultdict, deque
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "trustProxyHeaders": False,
     "verifyHttps": False,
 }
+APP_VERSION = "1.0.0"
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 STATUS_CACHE = {"status": None, "expires_at": 0}
@@ -666,6 +667,7 @@ def make_home_xaml(status, github_status, blog_status):
 
     return f"""<local:MyCard Title="{xml_escape(CONFIG['serverName'])}" Margin="0,0,0,12">
   <StackPanel Margin="20,22,18,6">
+    <TextBlock Text="v{xml_escape(APP_VERSION)}" HorizontalAlignment="Right" Foreground="{{DynamicResource ColorBrush3}}" FontSize="11" Margin="0,-8,0,2" />
     <Grid Margin="0,2,0,2">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*" />
@@ -755,12 +757,16 @@ class Handler(BaseHTTPRequestHandler):
     def send_body(self, status_code, content_type, body):
         if isinstance(body, str):
             body = body.encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status_code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            return
 
     def send_rate_limited(self, retry_after, message):
         body = json.dumps(
@@ -769,13 +775,17 @@ class Handler(BaseHTTPRequestHandler):
             indent=2,
         )
         encoded = body.encode("utf-8")
-        self.send_response(429)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Retry-After", str(retry_after))
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Retry-After", str(retry_after))
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+            self.wfile.flush()
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            return
 
     def do_GET(self):
         try:
@@ -830,11 +840,12 @@ def is_client_disconnect_error(error_text):
 def main():
     host = CONFIG["listenHost"]
     port = int(CONFIG["listenPort"])
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = HTTPServer((host, port), Handler)
     monitor = threading.Thread(target=github_monitor_loop, name="sscfg-github-monitor", daemon=True)
     monitor.start()
     blog_monitor = threading.Thread(target=blog_monitor_loop, name="bjd-blog-monitor", daemon=True)
     blog_monitor.start()
+    print(f"PCL2 homepage server version: {APP_VERSION}")
     print(f"PCL2 custom home XAML: http://{host}:{port}/Custom.xaml")
     print(f"Minecraft status JSON: http://{host}:{port}/api/status")
     print(f"Minecraft target: {CONFIG['minecraftHost']}:{CONFIG['minecraftPort']}")
