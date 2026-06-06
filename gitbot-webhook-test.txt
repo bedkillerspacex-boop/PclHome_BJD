@@ -1,0 +1,4 @@
+GitBot webhook test
+
+This file was added to trigger the KamBskBot GitBot notification webhook.
+Test time: 2026-06-06 22:50 Asia/Shanghai
