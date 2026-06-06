@@ -1,4 +1,7 @@
 __pycache__/
 *.pyc
+*.tmp
 server.out.log
 server.err.log
+server.runtime.log
+python-*-amd64.exe
